@@ -1,0 +1,1059 @@
+---
+title: "Performance Dashboard"
+output:
+  flexdashboard::flex_dashboard:
+    css: styles.css
+    orientation: columns
+    vertical_layout: scroll
+    theme: cerulean
+    logo: 
+    code_folding: hide
+runtime: shiny
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+```{css, echo=FALSE}
+.chart-stage, .chart-shim, .section.level4 {
+    height: auto; /* Adjust height based on content */
+    overflow-y: auto; /* Enable vertical scroll */
+    max-height: 800px; /* or any other appropriate value */
+}
+
+.navbar-inverse {
+    background-color: black !important; /* Solid black background */
+    background-image: none !important; /* Removing gradient background */
+    border-color: black !important; /* Black border for consistency */
+}
+
+.navbar-inverse .navbar-brand, .navbar-inverse .navbar-nav > li > a {
+    color: yellow;
+}
+
+.navbar-inverse .navbar-brand:hover, .navbar-inverse .navbar-nav > li > a:hover,
+.navbar-inverse .navbar-nav > .active > a, .navbar-inverse .navbar-nav > .active > a:hover,
+.navbar-inverse .navbar-nav > .active > a:focus {
+    color: white !important;
+    background-color: black !important;
+}
+
+.navbar-inverse .navbar-brand:hover, .navbar-inverse .navbar-nav > li > a:hover {
+    color: yellow;
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(data.table)
+library(DT)
+library(readxl)
+library(plotly)
+library(tbrf)
+library(shiny)
+library(shinythemes)
+library(lubridate)
+library(ggplot2)
+library(cowplot)
+
+# Load your dataset
+CMJ <- read_csv("./forcedecks-test-export-01_02_2025.csv")
+KT <- read_csv("./KT_basic_output.csv")
+Bodyweight <- read_csv("./body_weights_export.csv")
+Bodycomp <- read_csv("./body_comps_export.csv")
+
+CMJ$Date <- dmy(CMJ$Date)
+CMJ <- CMJ %>%
+  mutate(`Concentric Mean Force % (Asym) (%)` = as.numeric(str_remove(`Concentric Mean Force % (Asym) (%)`, "[LR]")) * 
+                                                ifelse(str_detect(`Concentric Mean Force % (Asym) (%)`, "L"), -1, 1))
+CMJ <- CMJ %>%
+  mutate(`Eccentric Braking RFD % (Asym) (%)` = as.numeric(str_remove(`Eccentric Braking RFD % (Asym) (%)`, "[LR]")) * 
+                                                ifelse(str_detect(`Eccentric Braking RFD % (Asym) (%)`, "L"), -1, 1))
+CMJ <- CMJ %>%
+  mutate(`Eccentric Mean Force % (Asym) (%)` = as.numeric(str_remove(`Eccentric Mean Force % (Asym) (%)`, "[LR]")) * 
+                                                ifelse(str_detect(`Eccentric Mean Force % (Asym) (%)`, "L"), -1, 1))
+
+KT <- KT %>%
+  mutate(Percentage_Difference = case_when(
+    Right > Left ~ ((Right - Left) / Left) * 100,
+    Left > Right ~ -((Left - Right) / Right) * 100,
+    TRUE ~ 0  # Handles cases where Left and Right are equal
+  ))
+
+KT <- KT %>%
+  pivot_longer(
+    cols = c("Right", "Left"),  # Specify which columns to make long
+    names_to = "Side",          # New column for the old column names
+    values_to = "Force_value"   # New column for the values from 'right' and 'left'
+  )
+
+Bodyweight$Player <- str_replace(Bodyweight$Player, "\\s*Edit Weight$", "")
+Bodyweight$`Weight (LB)` <- str_replace(Bodyweight$`Weight (LB)`, "\\s*lbs$", "")
+Bodyweight$`Weight (LB)` <- as.numeric(Bodyweight$`Weight (LB)`)
+Bodyweight$Weight <- Bodyweight$`Weight (LB)`
+Bodyweight <- Bodyweight %>%
+  filter(str_detect(Player, "Patty Mills"))
+Bodyweight <- Bodyweight %>%
+  mutate(Date = mdy(Date))
+
+Bodycomp$Player <- str_replace(Bodycomp$Player, "\\s*Edit$", "")
+Bodycomp <- Bodycomp %>%
+  filter(str_detect(Player, "Patty Mills"))
+Bodycomp <- Bodycomp %>%
+  mutate(Date = mdy(Date))
+
+```
+
+
+Player Overview
+==================
+
+```{r ui-date-input, echo=FALSE}
+  fluidRow(
+    column(6, dateRangeInput("dateRange",
+               label = "Select Date Range",
+               start = Sys.Date() - 30,  # Default start date 30 days ago
+               end = Sys.Date(),        # Default end date today
+               max = Sys.Date(),        # Maximum date selectable, today
+               format = "dd/mm/yyyy",
+               startview = 'month',
+               weekstart = 1,
+               language = 'en',
+               separator = " to ")),
+    column(6, selectInput("testSelection",
+            label = "Select More Metrics",
+            choices = unique(KT$Type),  # Example test names
+            selected = c("Hip Abduction", "Hip Adduction 60", "Knee Flexion"),
+            multiple = TRUE)))
+
+```
+
+
+GPS
+==================
+
+```{r ui-date-input2, echo=FALSE}
+  fluidRow(
+    column(6, dateRangeInput("dateRange",
+               label = "Select Date Range",
+               start = Sys.Date() - 30,  # Default start date 30 days ago
+               end = Sys.Date(),        # Default end date today
+               max = Sys.Date(),        # Maximum date selectable, today
+               format = "dd/mm/yyyy",
+               startview = 'month',
+               weekstart = 1,
+               language = 'en',
+               separator = " to ")),
+    column(6, selectInput("testSelection",
+            label = "Select More Metrics",
+            choices = unique(KT$Type),  # Example test names
+            selected = c("Hip Abduction", "Hip Adduction 60", "Knee Flexion"),
+            multiple = TRUE)))
+
+```
+
+Rows {.tabset}
+---
+
+### CMJ
+
+#### 
+
+```{r conmeanforce-plot, echo=FALSE}
+
+plotOutput("CMJplots")
+
+```
+
+```{r concmeanforce-server, echo=FALSE}
+
+output$CMJplots <- renderPlot({
+    # Fetching the input from the date range selector
+    date_input <- input$dateRange
+    
+    if (is.null(date_input[1]) || is.null(date_input[2])) {
+        return()  # Exit the function if the date range is not defined
+    }
+
+    # Convert input dates from character to Date if necessary
+    start_date <- as.Date(date_input[1])
+    end_date <- as.Date(date_input[2])
+    
+    # Filter CMJ dataset based on the selected date range
+    filtered_data <- CMJ %>%
+        filter(Date >= start_date & Date <= end_date)
+
+    # Debugging: Output the date range actually used
+    print(paste("Filtering from", min(filtered_data$Date), "to", max(filtered_data$Date)))
+
+    conc_mean_force_mean <- mean(filtered_data$`Concentric Mean Force [N]`, na.rm = TRUE)
+    conc_mean_force_sd <- sd(filtered_data$`Concentric Mean Force [N]`, na.rm = TRUE)
+    
+    lower_bound_conc_mean_force <- conc_mean_force_mean - conc_mean_force_sd
+    upper_bound_conc_mean_force <- conc_mean_force_mean + conc_mean_force_sd
+
+Con_mean_plot <- ggplot(filtered_data, aes(x = Date, y = `Concentric Mean Force [N]`, fill = `Concentric Mean Force [N]`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_conc_mean_force, ymax = upper_bound_conc_mean_force,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        labs(title = "Concentric Mean Force [N]", x = "", y = "") +
+        scale_fill_gradient(low = "red", high = "green") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+    ecc_mean_force_mean <- mean(filtered_data$`Eccentric Mean Force [N]`, na.rm = TRUE)
+    ecc_mean_force_sd <- sd(filtered_data$`Eccentric Mean Force [N]`, na.rm = TRUE)
+    
+    lower_bound_ecc_mean_force <- ecc_mean_force_mean - ecc_mean_force_sd
+    upper_bound_ecc_mean_force <- ecc_mean_force_mean + ecc_mean_force_sd
+
+Ecc_mean_plot <- ggplot(filtered_data, aes(x = Date, y = `Eccentric Mean Force [N]`, fill = `Eccentric Mean Force [N]`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_ecc_mean_force, ymax = upper_bound_ecc_mean_force,
+           fill = "gray", alpha = 0.5) +
+    geom_col() +  # Using geom_col() to create a bar plot
+    labs(title = "Eccentric Mean Force [N]",
+         x = "",
+         y = "") +
+  scale_fill_gradient(low = "red", high = "green") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5),
+          legend.position = "none",
+          panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+    con_mean_power_mean <- mean(filtered_data$`Concentric Mean Power [W]`, na.rm = TRUE)
+    con_mean_power_sd <- sd(filtered_data$`Concentric Mean Power [W]`, na.rm = TRUE)
+    
+    lower_bound_con_mean_power <- con_mean_power_mean - con_mean_power_sd
+    upper_bound_con_mean_power <- con_mean_power_mean + con_mean_power_sd
+
+Con_mean_power_plot <- ggplot(filtered_data, aes(x = Date, y = `Concentric Mean Power [W]`, fill = `Concentric Mean Power [W]`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_con_mean_power, ymax = upper_bound_con_mean_power,
+           fill = "gray", alpha = 0.5) +
+    geom_col() +  # Using geom_col() to create a bar plot
+    labs(title = "Concentric Mean Power [W]",
+         x = "",
+         y = "") +
+  scale_fill_gradient(low = "red", high = "green") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5),
+          legend.position = "none",
+          panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+    ftct_mean <- mean(filtered_data$`Flight Time:Contraction Time`, na.rm = TRUE)
+    ftct_sd <- sd(filtered_data$`Flight Time:Contraction Time`, na.rm = TRUE)
+    
+    lower_bound_ftct <- ftct_mean - ftct_sd
+    upper_bound_ftct <- ftct_mean + ftct_sd
+
+ftct_plot <- ggplot(filtered_data, aes(x = Date, y = `Flight Time:Contraction Time`, fill = `Flight Time:Contraction Time`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_ftct, ymax = upper_bound_ftct,
+           fill = "gray", alpha = 0.5) +
+    geom_col() +  # Using geom_col() to create a bar plot
+    labs(title = "Flight Time:Contraction Time",
+         x = "Date",
+         y = "") +
+  scale_fill_gradient(low = "red", high = "green") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5),
+          legend.position = "none",
+          panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+    ecc_brak_rfd_mean <- mean(filtered_data$`Eccentric Braking RFD [N/s]`, na.rm = TRUE)
+    ecc_brak_rfd_sd <- sd(filtered_data$`Eccentric Braking RFD [N/s]`, na.rm = TRUE)
+    
+    lower_bound_ecc_brak_rfd <- ecc_brak_rfd_mean - ecc_brak_rfd_sd
+    upper_bound_ecc_brak_rfd <- ecc_brak_rfd_mean + ecc_brak_rfd_sd
+
+ecc_brak_rfd_plot <- ggplot(filtered_data, aes(x = Date, y = `Eccentric Braking RFD [N/s]`, fill = `Eccentric Braking RFD [N/s]`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_ecc_brak_rfd, ymax = upper_bound_ecc_brak_rfd,
+           fill = "gray", alpha = 0.5) +
+    geom_col() +  # Using geom_col() to create a bar plot
+    labs(title = "Eccentric Braking RFD [N/s]",
+         x = "Date",
+         y = "") +
+  scale_fill_gradient(low = "red", high = "green") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5),
+          legend.position = "none",
+          panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+    height_imp_mom_mean <- mean(filtered_data$`Jump Height (Imp-Mom) [cm]`, na.rm = TRUE)
+    height_imp_mom_sd <- sd(filtered_data$`Jump Height (Imp-Mom) [cm]`, na.rm = TRUE)
+    
+    lower_bound_height_imp_mom <- height_imp_mom_mean - height_imp_mom_sd
+    upper_bound_height_imp_mom <- height_imp_mom_mean + height_imp_mom_sd
+
+height_imp_mom_plot <- ggplot(filtered_data, aes(x = Date, y = `Jump Height (Imp-Mom) [cm]`, fill = `Jump Height (Imp-Mom) [cm]`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_height_imp_mom, ymax = upper_bound_height_imp_mom,
+           fill = "gray", alpha = 0.5) +
+    geom_col() +  # Using geom_col() to create a bar plot
+    labs(title = "Jump Height (Imp-Mom) [cm]",
+         x = "Date",
+         y = "") +
+  scale_fill_gradient(low = "red", high = "green") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5),
+          legend.position = "none",
+          panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+cmj_graphs <- plot_grid(Con_mean_plot, Ecc_mean_plot, Con_mean_power_plot, ftct_plot, 
+          ecc_brak_rfd_plot, height_imp_mom_plot, ncol = 3)  # Adjust ncol and nrow as needed
+
+ggdraw(cmj_graphs) + 
+  draw_label("Various Units", x = 0, y = 0.5, vjust = 1, angle = 90, size = 14)
+
+}, height = function() {
+    500  # Adjust height accordingly
+}, width = function() { 1400 })
+
+```
+
+
+### CMJ Asymm
+
+#### 
+
+```{r cmjasymm, echo=FALSE}
+
+plotOutput("CMJasymmplots")
+
+```
+
+
+```{r cmjasymm-server, echo=FALSE}
+
+output$CMJasymmplots <- renderPlot({
+    # Fetching the input from the date range selector
+    date_input <- input$dateRange
+    
+    if (is.null(date_input[1]) || is.null(date_input[2])) {
+        return()  # Exit the function if the date range is not defined
+    }
+
+    # Convert input dates from character to Date if necessary
+    start_date <- as.Date(date_input[1])
+    end_date <- as.Date(date_input[2])
+    
+    # Filter CMJ dataset based on the selected date range
+    filtered_data <- CMJ %>%
+        filter(Date >= start_date & Date <= end_date)
+
+    # Debugging: Output the date range actually used
+    print(paste("Filtering from", min(filtered_data$Date), "to", max(filtered_data$Date)))
+
+    conc_mean_force_asymm_mean <- mean(filtered_data$`Concentric Mean Force % (Asym) (%)`, na.rm = TRUE)
+    conc_mean_force_asymm_sd <- sd(filtered_data$`Concentric Mean Force % (Asym) (%)`, na.rm = TRUE)
+    
+    lower_bound_conc_mean_force_asymm <- conc_mean_force_asymm_mean - conc_mean_force_asymm_sd
+    upper_bound_conc_mean_force_asymm <- conc_mean_force_asymm_mean + conc_mean_force_asymm_sd
+
+Con_mean_force_asymm_plot <- ggplot(filtered_data, aes(x = Date, y = `Concentric Mean Force % (Asym) (%)`, fill = `Concentric Mean Force % (Asym) (%)`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_conc_mean_force_asymm, ymax = upper_bound_conc_mean_force_asymm,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) +
+        labs(title = "Concentric Mean Force Asymm (%)", x = "", y = "") +
+        scale_fill_gradient2(low = "red", mid = "green", high = "red", midpoint = 0) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+    ecc_braking_rfd_asymm_mean <- mean(filtered_data$`Eccentric Braking RFD % (Asym) (%)`, na.rm = TRUE)
+    ecc_braking_rfd_asymm_sd <- sd(filtered_data$`Eccentric Braking RFD % (Asym) (%)`, na.rm = TRUE)
+    
+    lower_bound_ecc_braking_rfd_asymm <- ecc_braking_rfd_asymm_mean - ecc_braking_rfd_asymm_sd
+    upper_bound_ecc_braking_rfd_asymm <- ecc_braking_rfd_asymm_mean + ecc_braking_rfd_asymm_sd
+
+Ecc_braking_rfd_asymm_plot <- ggplot(filtered_data, aes(x = Date, y = `Eccentric Braking RFD % (Asym) (%)`, fill = `Eccentric Braking RFD % (Asym) (%)`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_ecc_braking_rfd_asymm, ymax = upper_bound_ecc_braking_rfd_asymm,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) +
+        labs(title = "Eccentric Braking RFD Asymm (%)", x = "", y = "") +
+        scale_fill_gradient2(low = "red", mid = "green", high = "red", midpoint = 0) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+ecc_mean_force_asymm_mean <- mean(filtered_data$`Eccentric Mean Force % (Asym) (%)`, na.rm = TRUE)
+    ecc_mean_force_asymm_sd <- sd(filtered_data$`Eccentric Mean Force % (Asym) (%)`, na.rm = TRUE)
+    
+    lower_bound_ecc_mean_force_asymm <- ecc_mean_force_asymm_mean - ecc_mean_force_asymm_sd
+    upper_bound_ecc_mean_force_asymm <- ecc_mean_force_asymm_mean + ecc_mean_force_asymm_sd
+
+Ecc_mean_force_asymm_plot <- ggplot(filtered_data, aes(x = Date, y = `Eccentric Mean Force % (Asym) (%)`, fill = `Eccentric Mean Force % (Asym) (%)`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_ecc_mean_force_asymm, ymax = upper_bound_ecc_mean_force_asymm,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) +
+        labs(title = "Eccentric Mean Force Asymm (%)", x = "Date", y = "") +
+        scale_fill_gradient2(low = "red", mid = "green", high = "red", midpoint = 0) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+cmj_asymm_graphs <- plot_grid(Con_mean_force_asymm_plot, Ecc_braking_rfd_asymm_plot,
+                              Ecc_mean_force_asymm_plot, ncol = 1)  # Adjust ncol and nrow as needed
+
+ggdraw(cmj_asymm_graphs) + 
+  draw_label("Asymmetry (%)     + = Right Dominant", x = 0, y = 0.5, vjust = 1, angle = 90, size = 14)
+
+}, height = function() {
+    500  # Adjust height accordingly
+}, width = function() { 1400 })
+
+```
+
+
+### Iso Strength
+
+#### 
+
+```{r kt-plot, echo=FALSE}
+
+plotOutput("KTplots")
+
+```
+
+```{r kt-server, echo=FALSE}
+
+output$KTplots <- renderPlot({
+    # Fetching the input from the date range selector
+    date_input <- input$dateRange
+    
+    if (is.null(date_input[1]) || is.null(date_input[2])) {
+        return()  # Exit the function if the date range is not defined
+    }
+
+    # Convert input dates from character to Date if necessary
+    start_date <- as.Date(date_input[1])
+    end_date <- as.Date(date_input[2])
+    
+    # Filter CMJ dataset based on the selected date range
+    filtered_data <- KT %>%
+        filter(Date >= start_date & Date <= end_date)
+
+    # Debugging: Output the date range actually used
+    print(paste("Filtering from", min(filtered_data$Date), "to", max(filtered_data$Date)))
+
+    hip_abduction_filtered_data <- filtered_data %>%
+    filter(Type == "Hip Abduction")
+    
+    r_hip_abduction_force_mean <- hip_abduction_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    r_hip_abduction_force_sd <- hip_abduction_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    l_hip_abduction_force_mean <- hip_abduction_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    l_hip_abduction_force_sd <- hip_abduction_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    r_lower_bound_hip_abduction_force <- r_hip_abduction_force_mean - r_hip_abduction_force_sd
+    r_upper_bound_hip_abduction_force <- r_hip_abduction_force_mean + r_hip_abduction_force_sd
+    
+    l_lower_bound_hip_abduction_force <- l_hip_abduction_force_mean - l_hip_abduction_force_sd
+    l_upper_bound_hip_abduction_force <- l_hip_abduction_force_mean + l_hip_abduction_force_sd
+
+hip_abduction_plot <- ggplot(hip_abduction_filtered_data, aes(x = Date, y = Force_value, color = Side, group = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = r_lower_bound_hip_abduction_force, ymax = r_upper_bound_hip_abduction_force,
+           fill = "orange", alpha = 0.25) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = l_lower_bound_hip_abduction_force, ymax = l_upper_bound_hip_abduction_force,
+           fill = "blue", alpha = 0.25) +
+        geom_line() +
+        geom_point() +
+        scale_color_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        labs(title = "Hip Abduction", x = "", y = "") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+hip_adduction_60_filtered_data <- filtered_data %>%
+    filter(Type == "Hip Adduction 60")
+    
+    r_hip_adduction_60_force_mean <- hip_adduction_60_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    r_hip_adduction_60_force_sd <- hip_adduction_60_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    l_hip_adduction_60_force_mean <- hip_adduction_60_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    l_hip_adduction_60_force_sd <- hip_adduction_60_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    r_lower_bound_hip_adduction_60_force <- r_hip_adduction_60_force_mean - r_hip_adduction_60_force_sd
+    r_upper_bound_hip_adduction_60_force <- r_hip_adduction_60_force_mean + r_hip_adduction_60_force_sd
+    
+    l_lower_bound_hip_adduction_60_force <- l_hip_adduction_60_force_mean - l_hip_adduction_60_force_sd
+    l_upper_bound_hip_adduction_60_force <- l_hip_adduction_60_force_mean + l_hip_adduction_60_force_sd
+
+hip_adduction_60_plot <- ggplot(hip_adduction_60_filtered_data, aes(x = Date, y = Force_value, color = Side, group = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = r_lower_bound_hip_adduction_60_force, ymax = r_upper_bound_hip_adduction_60_force,
+           fill = "orange", alpha = 0.25) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = l_lower_bound_hip_adduction_60_force, ymax = l_upper_bound_hip_adduction_60_force,
+           fill = "blue", alpha = 0.25) +
+        geom_line() +
+        geom_point() +
+        scale_color_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        labs(title = "Hip Adduction 60", x = "", y = "") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+knee_flexion_filtered_data <- filtered_data %>%
+    filter(Type == "Knee Flexion")
+    
+    r_knee_flexion_force_mean <- knee_flexion_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    r_knee_flexion_force_sd <- knee_flexion_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    l_knee_flexion_force_mean <- knee_flexion_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    l_knee_flexion_force_sd <- knee_flexion_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    r_lower_bound_knee_flexion_force <- r_knee_flexion_force_mean - r_knee_flexion_force_sd
+    r_upper_bound_knee_flexion_force <- r_knee_flexion_force_mean + r_knee_flexion_force_sd
+    
+    l_lower_bound_knee_flexion_force <- l_knee_flexion_force_mean - l_knee_flexion_force_sd
+    l_upper_bound_knee_flexion_force <- l_knee_flexion_force_mean + l_knee_flexion_force_sd
+
+knee_flexion_plot <- ggplot(knee_flexion_filtered_data, aes(x = Date, y = Force_value, color = Side, group = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = r_lower_bound_knee_flexion_force, ymax = r_upper_bound_knee_flexion_force,
+           fill = "orange", alpha = 0.25) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = l_lower_bound_knee_flexion_force, ymax = l_upper_bound_knee_flexion_force,
+           fill = "blue", alpha = 0.25) +
+        geom_line() +
+        geom_point() +
+        scale_color_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        labs(title = "Knee Flexion", x = "", y = "") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+hip_adduction_30_filtered_data <- filtered_data %>%
+    filter(Type == "Hip Adduction 30")
+    
+    r_hip_adduction_30_force_mean <- hip_adduction_30_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    r_hip_adduction_30_force_sd <- hip_adduction_30_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    l_hip_adduction_30_force_mean <- hip_adduction_30_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    l_hip_adduction_30_force_sd <- hip_adduction_30_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    r_lower_bound_hip_adduction_30_force <- r_hip_adduction_30_force_mean - r_hip_adduction_30_force_sd
+    r_upper_bound_hip_adduction_30_force <- r_hip_adduction_30_force_mean + r_hip_adduction_30_force_sd
+    
+    l_lower_bound_hip_adduction_30_force <- l_hip_adduction_30_force_mean - l_hip_adduction_30_force_sd
+    l_upper_bound_hip_adduction_30_force <- l_hip_adduction_30_force_mean + l_hip_adduction_30_force_sd
+
+hip_adduction_30_plot <- ggplot(hip_adduction_30_filtered_data, aes(x = Date, y = Force_value, color = Side, group = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = r_lower_bound_hip_adduction_30_force, ymax = r_upper_bound_hip_adduction_30_force,
+           fill = "orange", alpha = 0.25) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = l_lower_bound_hip_adduction_30_force, ymax = l_upper_bound_hip_adduction_30_force,
+           fill = "blue", alpha = 0.25) +
+        geom_line() +
+        geom_point() +
+        scale_color_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        labs(title = "Hip Adduction 30", x = "", y = "") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+ankle_plantarflexion_filtered_data <- filtered_data %>%
+    filter(Type == "Ankle Plantar Flexion")
+    
+    r_ankle_plantarflexion_force_mean <- ankle_plantarflexion_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    r_ankle_plantarflexion_force_sd <- ankle_plantarflexion_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    l_ankle_plantarflexion_force_mean <- ankle_plantarflexion_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    l_ankle_plantarflexion_force_sd <- ankle_plantarflexion_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    r_lower_bound_ankle_plantarflexion_force <- r_ankle_plantarflexion_force_mean - r_ankle_plantarflexion_force_sd
+    r_upper_bound_ankle_plantarflexion_force <- r_ankle_plantarflexion_force_mean + r_ankle_plantarflexion_force_sd
+    
+    l_lower_bound_ankle_plantarflexion_force <- l_ankle_plantarflexion_force_mean - l_ankle_plantarflexion_force_sd
+    l_upper_bound_ankle_plantarflexion_force <- l_ankle_plantarflexion_force_mean + l_ankle_plantarflexion_force_sd
+  
+
+ankle_plantarflexion_plot <- ggplot(ankle_plantarflexion_filtered_data, aes(x = Date, y = Force_value, color = Side, group = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = r_lower_bound_ankle_plantarflexion_force, ymax = r_upper_bound_ankle_plantarflexion_force,
+           fill = "orange", alpha = 0.25) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = l_lower_bound_ankle_plantarflexion_force, ymax = l_upper_bound_ankle_plantarflexion_force,
+           fill = "blue", alpha = 0.25) +
+        geom_line() +
+        geom_point() +
+        scale_color_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        labs(title = "Ankle Plantar Flexion", x = "", y = "") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+knee_extension_60_filtered_data <- filtered_data %>%
+    filter(Type == "Knee Extension 60")
+    
+    r_knee_extension_60_force_mean <- knee_extension_60_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    r_knee_extension_60_force_sd <- knee_extension_60_filtered_data %>%
+     filter(Side == "Right") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    l_knee_extension_60_force_mean <- knee_extension_60_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(Mean_Force_Value = mean(Force_value, na.rm = TRUE)) %>%
+     pull(Mean_Force_Value)
+    l_knee_extension_60_force_sd <- knee_extension_60_filtered_data %>%
+     filter(Side == "Left") %>%
+     summarise(SD_Force_Value = sd(Force_value, na.rm = TRUE)) %>%
+     pull(SD_Force_Value)
+    
+    r_lower_bound_knee_extension_60_force <- r_knee_extension_60_force_mean - r_knee_extension_60_force_sd
+    r_upper_bound_knee_extension_60_force <- r_knee_extension_60_force_mean + r_knee_extension_60_force_sd
+    
+    l_lower_bound_knee_extension_60_force <- l_knee_extension_60_force_mean - l_knee_extension_60_force_sd
+    l_upper_bound_knee_extension_60_force <- l_knee_extension_60_force_mean + l_knee_extension_60_force_sd
+  
+
+knee_extension_60_plot <- ggplot(knee_extension_60_filtered_data, aes(x = Date, y = Force_value, color = Side, group = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = r_lower_bound_knee_extension_60_force, ymax = r_upper_bound_knee_extension_60_force,
+           fill = "orange", alpha = 0.25) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = l_lower_bound_knee_extension_60_force, ymax = l_upper_bound_knee_extension_60_force,
+           fill = "blue", alpha = 0.25) +
+        geom_line() +
+        geom_point() +
+        scale_color_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        labs(title = "Knee Extension 60", x = "", y = "") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+legend_plot <- ggplot(hip_abduction_filtered_data, aes(x = Date, y = Force_value, color = Side, group = Side)) +
+        geom_line() +
+        geom_point() +
+        scale_color_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        labs(title = "Hip ", x = "", y = "") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "bottom")
+
+kt_graphs_legend <- get_plot_component(legend_plot, 'guide-box-bottom', return_all = TRUE)
+
+selected_plots <- list()
+
+        # Conditionally add plots based on user selections
+        if ("Hip Abduction" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- hip_abduction_plot
+        }
+        if ("Hip Adduction 60" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- hip_adduction_60_plot
+        }
+        if ("Knee Flexion" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- knee_flexion_plot
+        }
+        if ("Hip Adduction 30" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- hip_adduction_30_plot
+        }
+        if ("Ankle Plantar Flexion" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- ankle_plantarflexion_plot
+        }
+        if ("Knee Extension 60" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- knee_extension_60_plot
+        }
+
+        # Use plot_grid to combine the selected plots
+        if (length(selected_plots) > 0) {
+            kt_graphs <- plot_grid(plotlist = selected_plots, ncol = 1)
+        } else {
+            return()  # Return nothing if no plots are selected
+        }
+
+
+kt_graphs_with_legend <- plot_grid(kt_graphs, NULL, kt_graphs_legend, ncol = 1, rel_heights = c(1, -0.07, .1))
+
+ggdraw(kt_graphs_with_legend) + 
+  draw_label("Peak Force (kg)", x = 0, y = 0.5, vjust = 1, angle = 90, size = 14) +
+  draw_label("Date", x = 0.5, y = 0.02, hjust = 1, angle = 0, size = 14)
+
+
+}, height = function() {
+    500  # Adjust height accordingly
+}, width = function() { 1400 })
+
+```
+
+
+### Iso Strength Asymm
+
+#### 
+
+```{r ktasymm, echo=FALSE}
+
+plotOutput("ktasymmplots")
+
+```
+
+
+```{r ktasymm-server, echo=FALSE}
+
+output$ktasymmplots <- renderPlot({
+    # Fetching the input from the date range selector
+    date_input <- input$dateRange
+    
+    if (is.null(date_input[1]) || is.null(date_input[2])) {
+        return()  # Exit the function if the date range is not defined
+    }
+
+    # Convert input dates from character to Date if necessary
+    start_date <- as.Date(date_input[1])
+    end_date <- as.Date(date_input[2])
+    
+    # Filter CMJ dataset based on the selected date range
+    filtered_data <- KT %>%
+        filter(Date >= start_date & Date <= end_date)
+
+    # Debugging: Output the date range actually used
+    print(paste("Filtering from", min(filtered_data$Date), "to", max(filtered_data$Date)))
+    
+    filtered_data <- filtered_data %>%
+    mutate(Side = ifelse(Percentage_Difference > 0, "Right", "Left"))
+
+    hip_abduction_filtered_data <- filtered_data %>%
+    filter(Type == "Hip Abduction")
+    
+    hip_abduction_force_asymm_mean <- mean(hip_abduction_filtered_data$`Percentage_Difference`,
+                                           na.rm = TRUE)
+    hip_abduction_force_asymm_sd <- sd(hip_abduction_filtered_data$`Percentage_Difference`,
+                                       na.rm = TRUE)
+    
+    lower_bound_hip_abduction_force_asymm <- hip_abduction_force_asymm_mean - hip_abduction_force_asymm_sd
+    upper_bound_hip_abduction_force_asymm <- hip_abduction_force_asymm_mean + hip_abduction_force_asymm_sd
+
+Hip_abduction_force_asymm_plot <- ggplot(hip_abduction_filtered_data, aes(x = Date, y = `Percentage_Difference`, fill = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_hip_abduction_force_asymm, ymax = upper_bound_hip_abduction_force_asymm,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) +
+        labs(title = "Hip Abduction", x = "", y = "") +
+        scale_fill_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+hip_adduction_60_filtered_data <- filtered_data %>%
+    filter(Type == "Hip Adduction 60")
+    
+    hip_adduction_60_force_asymm_mean <- mean(hip_adduction_60_filtered_data$`Percentage_Difference`,
+                                           na.rm = TRUE)
+    hip_adduction_60_force_asymm_sd <- sd(hip_adduction_60_filtered_data$`Percentage_Difference`,
+                                       na.rm = TRUE)
+    
+    lower_bound_hip_adduction_60_force_asymm <- hip_adduction_60_force_asymm_mean - hip_adduction_60_force_asymm_sd
+    upper_bound_hip_adduction_60_force_asymm <- hip_adduction_60_force_asymm_mean + hip_adduction_60_force_asymm_sd
+
+Hip_adduction_60_force_asymm_plot <- ggplot(hip_adduction_60_filtered_data, aes(x = Date, y = `Percentage_Difference`, fill = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_hip_adduction_60_force_asymm, ymax = upper_bound_hip_adduction_60_force_asymm,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) +
+        labs(title = "Hip Adduction 60", x = "", y = "") +
+        scale_fill_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+knee_flexion_filtered_data <- filtered_data %>%
+    filter(Type == "Knee Flexion")
+    
+    knee_flexion_force_asymm_mean <- mean(knee_flexion_filtered_data$`Percentage_Difference`,
+                                           na.rm = TRUE)
+    knee_flexion_force_asymm_sd <- sd(knee_flexion_filtered_data$`Percentage_Difference`,
+                                       na.rm = TRUE)
+    
+    lower_bound_knee_flexion_force_asymm <- knee_flexion_force_asymm_mean - knee_flexion_force_asymm_sd
+    upper_bound_knee_flexion_force_asymm <-knee_flexion_force_asymm_mean + knee_flexion_force_asymm_sd
+
+Knee_flexion_force_asymm_plot <- ggplot(knee_flexion_filtered_data, aes(x = Date, y = `Percentage_Difference`, fill = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_knee_flexion_force_asymm, ymax = upper_bound_knee_flexion_force_asymm,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) +
+        labs(title = "Knee Flexion", x = "", y = "") +
+        scale_fill_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+hip_adduction_30_filtered_data <- filtered_data %>%
+    filter(Type == "Hip Adduction 30")
+    
+    hip_adduction_30_force_asymm_mean <- mean(hip_adduction_30_filtered_data$`Percentage_Difference`,
+                                           na.rm = TRUE)
+    hip_adduction_30_force_asymm_sd <- sd(hip_adduction_30_filtered_data$`Percentage_Difference`,
+                                       na.rm = TRUE)
+    
+    lower_bound_hip_adduction_30_force_asymm <- hip_adduction_30_force_asymm_mean - hip_adduction_30_force_asymm_sd
+    upper_bound_hip_adduction_30_force_asymm <- hip_adduction_30_force_asymm_mean + hip_adduction_30_force_asymm_sd
+
+Hip_adduction_30_force_asymm_plot <- ggplot(hip_adduction_30_filtered_data, aes(x = Date, y = `Percentage_Difference`, fill = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_hip_adduction_30_force_asymm, ymax = upper_bound_hip_adduction_30_force_asymm,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) +
+        labs(title = "Hip Adduction 30", x = "", y = "") +
+        scale_fill_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+ankle_plantar_flexion_filtered_data <- filtered_data %>%
+    filter(Type == "Ankle Plantar Flexion")
+    
+    ankle_plantar_flexion_force_asymm_mean <- mean(ankle_plantar_flexion_filtered_data$`Percentage_Difference`,
+                                           na.rm = TRUE)
+    ankle_plantar_flexion_force_asymm_sd <- sd(ankle_plantar_flexion_filtered_data$`Percentage_Difference`,
+                                       na.rm = TRUE)
+    
+    lower_bound_ankle_plantar_flexion_force_asymm <- ankle_plantar_flexion_force_asymm_mean - ankle_plantar_flexion_force_asymm_sd
+    upper_bound_ankle_plantar_flexion_force_asymm <- ankle_plantar_flexion_force_asymm_mean + ankle_plantar_flexion_force_asymm_sd
+
+Ankle_plantar_flexion_force_asymm_plot <- ggplot(ankle_plantar_flexion_filtered_data, aes(x = Date, y = `Percentage_Difference`, fill = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_ankle_plantar_flexion_force_asymm, ymax = upper_bound_ankle_plantar_flexion_force_asymm,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) +
+        labs(title = "Ankle Plantar Flexion", x = "", y = "") +
+        scale_fill_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+knee_extension_60_filtered_data <- filtered_data %>%
+    filter(Type == "Knee Extension 60")
+    
+    knee_extension_60_force_asymm_mean <- mean(knee_extension_60_filtered_data$`Percentage_Difference`,
+                                           na.rm = TRUE)
+    knee_extension_60_force_asymm_sd <- sd(knee_extension_60_filtered_data$`Percentage_Difference`,
+                                       na.rm = TRUE)
+    
+    lower_bound_knee_extension_60_force_asymm <- knee_extension_60_force_asymm_mean - knee_extension_60_force_asymm_sd
+    upper_bound_knee_extension_60_force_asymm <- knee_extension_60_force_asymm_mean + knee_extension_60_force_asymm_sd
+
+Knee_extension_60_force_asymm_plot <- ggplot(knee_extension_60_filtered_data, aes(x = Date, y = `Percentage_Difference`, fill = Side)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_knee_extension_60_force_asymm, ymax = upper_bound_knee_extension_60_force_asymm,
+           fill = "gray", alpha = 0.5) +
+        geom_col() +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) +
+        labs(title = "Knee Extension 60", x = "", y = "") +
+        scale_fill_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+legend_plot_iso_strength_asymms <- ggplot(hip_abduction_filtered_data, aes(x = Date, y = `Percentage_Difference`, fill = Side)) +
+        geom_col() +
+        labs(title = "", x = "", y = "") +
+        scale_fill_manual(values = c("Right" = "orange", "Left" = "blue")) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "bottom")
+
+kt_asymm_graphs_legend <- get_plot_component(legend_plot_iso_strength_asymms, 'guide-box-bottom', return_all = TRUE)
+
+selected_plots <- list()
+
+        # Conditionally add plots based on user selections
+        if ("Hip Abduction" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- Hip_abduction_force_asymm_plot
+        }
+
+        if ("Hip Adduction 60" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- Hip_adduction_60_force_asymm_plot
+        }
+
+        if ("Knee Flexion" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- Knee_flexion_force_asymm_plot
+        }
+
+        if ("Hip Adduction 30" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- Hip_adduction_30_force_asymm_plot
+        }
+
+        if ("Ankle Plantar Flexion" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- Ankle_plantar_flexion_force_asymm_plot
+        }
+
+        if ("Knee Extension 60" %in% input$testSelection) {
+            selected_plots[[length(selected_plots) + 1]] <- Knee_extension_60_force_asymm_plot
+        }
+
+
+        if (length(selected_plots) > 0) {
+            kt_asymm_graphs <- plot_grid(plotlist = selected_plots, ncol = 1)
+        } else {
+            return()  # Return nothing if no plots are selected
+        }
+    
+
+kt_asymm_graphs_with_legend <- plot_grid(kt_asymm_graphs, NULL, kt_asymm_graphs_legend, ncol = 1, rel_heights = c(1, -0.07, .1))
+
+ggdraw(kt_asymm_graphs_with_legend) + 
+  draw_label("Percentage Difference", x = 0, y = 0.5, vjust = 1, angle = 90, size = 14) +
+  draw_label("Date", x = 0.5, y = 0.02, hjust = 1, angle = 0, size = 14)
+
+}, height = function() {
+    500  # Adjust height accordingly
+}, width = function() { 1400 })
+
+```
+
+
+### Anthros
+
+#### 
+
+```{r anthro-plot, echo=FALSE}
+
+plotOutput("Anthroplot")
+
+```
+
+
+```{r anthro-plot-server, echo=FALSE}
+
+output$Anthroplot <- renderPlot({
+    # Fetching the input from the date range selector
+    date_input <- input$dateRange
+    
+    if (is.null(date_input[1]) || is.null(date_input[2])) {
+        return()  # Exit the function if the date range is not defined
+    }
+
+    # Convert input dates from character to Date if necessary
+    start_date <- as.Date(date_input[1])
+    end_date <- as.Date(date_input[2])
+    
+    # Filter CMJ dataset based on the selected date range
+    filtered_data <- Bodyweight %>%
+        filter(Date >= start_date & Date <= end_date)
+
+    # Debugging: Output the date range actually used
+    print(paste("Filtering from", min(filtered_data$Date), "to", max(filtered_data$Date)))
+
+    bodyweight_mean <- mean(filtered_data$Weight, na.rm = TRUE)
+    bodyweight_sd <- sd(filtered_data$Weight, na.rm = TRUE)
+    
+    lower_bound_bodyweight_mean <- bodyweight_mean - bodyweight_sd
+    upper_bound_bodyweight_mean <- bodyweight_mean + bodyweight_sd
+
+Bodyweight_plot <- ggplot(filtered_data, aes(x = Date, y = Weight)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_bodyweight_mean, ymax = upper_bound_bodyweight_mean,
+           fill = "gray", alpha = 0.5) +
+        geom_line() +
+        geom_point() +
+        labs(title = "Bodyweight (lbs)", x = "", y = "lbs") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+
+        Bodycomp_filtered_data <- Bodycomp %>%
+        filter(Date >= start_date & Date <= end_date)
+
+    # Debugging: Output the date range actually used
+    print(paste("Filtering from", min(Bodycomp_filtered_data$Date), "to", max(Bodycomp_filtered_data$Date)))
+
+    bodycomp_mean <- mean(Bodycomp_filtered_data$`Total (Sum 7)`, na.rm = TRUE)
+    bodycomp_sd <- sd(Bodycomp_filtered_data$`Total (Sum 7)`, na.rm = TRUE)
+    
+    lower_bound_bodycomp_mean <- bodycomp_mean - bodycomp_sd
+    upper_bound_bodycomp_mean <- bodycomp_mean + bodycomp_sd
+
+Bodycomp_plot <- ggplot(Bodycomp_filtered_data, aes(x = Date, y = `Total (Sum 7)`)) +
+  annotate(geom = "rect", xmin = min(filtered_data$Date), xmax = max(filtered_data$Date), ymin = lower_bound_bodycomp_mean, ymax = upper_bound_bodycomp_mean,
+           fill = "gray", alpha = 0.5) +
+        geom_line() +
+        geom_point() +
+        labs(title = "Skin folds (Sum of 7)", x = "", y = "mm") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1), plot.title = element_text(hjust = 0.5), legend.position = "none",
+              panel.border = element_rect(color = "gray", size = 1, fill = NA))
+
+anthros_plots <- plot_grid(Bodyweight_plot, Bodycomp_plot, ncol = 1)  # Adjust ncol and nrow as needed
+
+ggdraw(anthros_plots) + 
+  draw_label("Date", x = 0.5, y = 0.02, hjust = 1, angle = 0, size = 14)
+
+}, height = function() {
+    500  # Adjust height accordingly
+}, width = function() { 1400 })
+
+```

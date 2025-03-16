@@ -1,0 +1,12 @@
+name: IndividualSandCTrends
+title: IndividualSandCTrends
+username: li-nets
+account: li-nets
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 13894797
+bundleId: 9744474
+url: https://li-nets.shinyapps.io/IndividualSandCTrends/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
